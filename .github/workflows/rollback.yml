@@ -12,7 +12,7 @@ on:
     inputs:
       environment:
         type: choice
-        options: [staging, production]
+        options: [stg, prod]
         required: true
       version:
         description: Commit to roll back to (empty = the release before the current one)

@@ -23,7 +23,7 @@ on:
     inputs:
       environment:
         type: choice
-        options: [staging, production]
+        options: [stg, prod]
         required: true
       version:
         description: Commit SHA (short or full) whose images to deploy
