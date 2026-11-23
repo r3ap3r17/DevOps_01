@@ -91,7 +91,7 @@ Each build job's summary shows how many steps came from the cache.
 ## Known risks
 
 - **The end-to-end test uses PhantomJS.** It comes from the upstream repo. Its original image no longer builds, so `ci/compose.yml` rebuilds it on a current base with the same test files. If the PhantomJS download breaks, this job is the one that fails.
-- **The worker runs on .NET 7, which no longer gets security updates.** If the scan fails on it, the fix is moving the worker Dockerfile to .NET 8. The same applies to `node:18` in `result`.
+- **The result service runs on Node 18, which no longer gets security updates.** If its scan fails, move it to a supported Node version.
 - **Production deploys queue.** Only one deploy per environment runs at a time. A newer commit waiting for production approval replaces an older one that was also waiting.
 
 ## Not done yet
