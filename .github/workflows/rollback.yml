@@ -1,0 +1,71 @@
+# One-click rollback: Actions > rollback > Run workflow.
+# One command:        gh workflow run rollback.yml -f environment=production
+#
+# With no version, the environment goes back to the release it ran before the
+# current one (<service>:<env>-previous). Running it twice swaps back, like `cd -`.
+# Give a version to go further back. It runs through deploy.yml, so a production
+# rollback still needs the production approval.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        required: true
+      version:
+        description: Commit to roll back to (empty = the release before the current one)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  resolve:
+    name: find rollback target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.target.outputs.version }}
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Image name
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: target
+        name: Resolve target
+        run: |
+          if [ -n "$VERSION" ]; then
+            target="$VERSION"
+          else
+            target="$(bash ci/rollback-target.sh "$ENVIRONMENT")"
+          fi
+          echo "Rolling ${ENVIRONMENT} back to ${target}"
+          echo "version=${target}" >> "$GITHUB_OUTPUT"
+
+  rollback:
+    name: rollback
+    needs: resolve
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.environment }}
+      version: ${{ needs.resolve.outputs.version }}

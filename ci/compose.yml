@@ -1,0 +1,98 @@
+# Integration stack for CI.
+#
+# Runs the images the pipeline just built (never rebuilt, never pulled) and the
+# upstream end-to-end test from services/result/tests against them: it casts a
+# vote and checks the result page shows it.
+#
+# The upstream test image is based on node:8.9-slim, whose Debian release is no
+# longer served by the package mirrors, so the sut container is built here from
+# the same test files on a current base instead. The test itself is unchanged.
+#
+#   IMAGE_PREFIX=ghcr.io/owner/repo IMAGE_TAG=sha-<commit> \
+#     docker compose -f ci/compose.yml up --build --exit-code-from sut sut
+name: voting-ci
+
+services:
+  sut:
+    build:
+      context: ../services/result/tests
+      dockerfile_inline: |
+        FROM node:20-bookworm-slim
+        RUN apt-get update \
+         && apt-get install -y --no-install-recommends bzip2 ca-certificates curl libfontconfig1 \
+         && rm -rf /var/lib/apt/lists/*
+        RUN yarn global add phantomjs-prebuilt@2.1.16
+        # PhantomJS 2.1 cannot read the OpenSSL 3 config shipped by bookworm
+        ENV OPENSSL_CONF=/dev/null
+        WORKDIR /app
+        COPY . .
+        CMD ["bash", "/app/tests.sh"]
+    depends_on:
+      vote:
+        condition: service_healthy
+      result:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    networks: [front-tier]
+
+  vote:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/vote:${IMAGE_TAG:?set IMAGE_TAG}
+    pull_policy: never
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [front-tier, back-tier]
+
+  result:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/result:${IMAGE_TAG:?set IMAGE_TAG}
+    pull_policy: never
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [front-tier, back-tier]
+
+  worker:
+    image: ${IMAGE_PREFIX:?set IMAGE_PREFIX}/worker:${IMAGE_TAG:?set IMAGE_TAG}
+    pull_policy: never
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    networks: [back-tier]
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 20
+    networks: [back-tier]
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    # No volume: every run starts from an empty database, which the test relies on.
+    healthcheck:
+      # Over TCP, so the temporary server postgres runs during init does not count.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 2s
+      retries: 30
+    networks: [back-tier]
+
+networks:
+  front-tier:
+  back-tier:

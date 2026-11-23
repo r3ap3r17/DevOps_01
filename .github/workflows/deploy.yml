@@ -1,0 +1,70 @@
+# Deploy = point an environment at the images of one commit.
+#
+# Every image is pushed once as <service>:sha-<commit> and never changes.
+# An environment is a moving tag on top of that: <service>:staging, <service>:production.
+# Deploying moves the tag and keeps the one it replaced as <service>:<env>-previous,
+# which is what the rollback workflow goes back to.
+#
+# When the Kubernetes milestone starts, only the "Promote" step changes: it will
+# write the image digests into the manifests Argo CD watches instead of moving tags.
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      version:
+        description: Commit SHA (short or full) whose images to deploy
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        required: true
+      version:
+        description: Commit SHA (short or full) whose images to deploy
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    name: deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Protection rules live on the environment: production has required reviewers,
+    # so this job waits for approval there before it starts.
+    environment:
+      name: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Resolve version
+        run: |
+          full="$(git rev-parse --verify --quiet "${VERSION}^{commit}")" || {
+            echo "::error::'${VERSION}' is not a commit in this repository."
+            exit 1
+          }
+          echo "VERSION=${full}" >> "$GITHUB_ENV"
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote
+        run: bash ci/deploy.sh "$ENVIRONMENT" "$VERSION"
