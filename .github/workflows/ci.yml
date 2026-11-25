@@ -1,9 +1,10 @@
 # CI/CD for the voting app.
 #
-#   static + unit  ->  build (matrix)  ->  scan + integration  ->  publish  ->  staging  ->  production
-#   (fail fast)        (layer cache)       (gates)                 (main only, immutable tags)  (approval)
+#   static + unit  ->  build (matrix)  ->  scan  ->  publish  ->  staging  ->  production
+#   (fail fast)        (layer cache)       (gate)    (main only, immutable tags)  (approval)
 #
-# Pull requests run everything up to and including scan + integration.
+# Pushes to any branch run the fast checks (static + unit) only.
+# Pull requests run everything up to and including scan.
 # Pushes to main also publish the images and deploy them.
 name: ci
 
@@ -11,7 +12,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
     inputs:
       no_cache:
@@ -19,10 +20,11 @@ on:
         type: boolean
         default: false
 
-# Newer commits on a PR cancel older runs. Runs on main never cancel each other,
-# so a deploy is never cut off halfway (run_id makes every main run its own group).
+# Newer commits on a branch or PR cancel older runs. Runs on main never cancel each
+# other, so a deploy is never cut off halfway (run_id makes every main run its own group).
+# A branch push (refs/heads/x) and its PR (refs/pull/n/merge) are separate groups.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ci-${{ github.ref != 'refs/heads/main' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -224,6 +226,8 @@ jobs:
   build:
     name: build (${{ matrix.service }})
     needs: [static, unit]
+    # Branch pushes stop after the fast checks; scan, publish and deploys follow build.
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -258,7 +262,7 @@ jobs:
           no-cache: ${{ env.CACHE_OFF == 'true' }}
           provenance: false
           sbom: false
-          # Build once, then hand the exact same image to scan, integration and publish.
+          # Build once, then hand the exact same image to scan and publish.
           outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.service }}.tar
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

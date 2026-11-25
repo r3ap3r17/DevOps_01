@@ -1,9 +1,12 @@
 # Deploy = point an environment at the images of one commit.
 #
 # Every image is pushed once as <service>:sha-<commit> and never changes.
-# An environment is a moving tag on top of that: <service>:staging, <service>:production.
+# An environment is a moving tag on top of that: <service>:stg, <service>:prod.
 # Deploying moves the tag and keeps the one it replaced as <service>:<env>-previous,
 # which is what the rollback workflow goes back to.
+#
+# An environment only moves forward unless allow_older is set: when two main runs
+# finish out of order, the older one leaves the newer release in place.
 #
 # When the Kubernetes milestone starts, only the "Promote" step changes: it will
 # write the image digests into the manifests Argo CD watches instead of moving tags.
@@ -19,6 +22,10 @@ on:
         description: Commit SHA (short or full) whose images to deploy
         type: string
         required: true
+      allow_older:
+        description: Allow going back to an older commit (rollback)
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       environment:
@@ -29,6 +36,10 @@ on:
         description: Commit SHA (short or full) whose images to deploy
         type: string
         required: true
+      allow_older:
+        description: Allow going back to an older commit (rollback)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,6 +60,7 @@ jobs:
     env:
       ENVIRONMENT: ${{ inputs.environment }}
       VERSION: ${{ inputs.version }}
+      ALLOW_OLDER: ${{ inputs.allow_older }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
