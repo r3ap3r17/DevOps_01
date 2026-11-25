@@ -1,0 +1,98 @@
+# Readable release tags: push a git tag, get the same name on the images.
+#
+#   git tag v1.4.0 <commit> && git push origin v1.4.0
+#
+# Nothing is rebuilt. Each <service>:sha-<commit> that CI already built, scanned,
+# tested and published is copied inside the registry to <service>:v1.4.0, so the
+# release has exactly the same digest as the image that passed the pipeline.
+#
+# Rules:
+#   - only vX.Y.Z tags, and only on commits that passed CI on main (their sha- images exist).
+#     Tag after the commit's ci run is green; if you tag too early, re-run this workflow.
+#   - a release tag is never moved: if vX.Y.Z already points at other images, the run fails.
+#
+# Release tags only name a version. Deploying is still deploy.yml with the commit SHA.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag-images:
+    name: tag images ${{ github.ref_name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE: ${{ github.ref_name }}
+      SERVICES: vote result worker
+    steps:
+      - name: Check the tag
+        run: |
+          if ! [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${RELEASE}' is not a release tag. Use vX.Y.Z, e.g. v1.4.0."
+            exit 1
+          fi
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the published images
+        run: |
+          set -euo pipefail
+
+          # Digest of a tag, or nothing if the tag does not exist.
+          digest() {
+            { docker buildx imagetools inspect "$1" 2>/dev/null || true; } | awk '/^Digest:/ { print $2; exit }'
+          }
+
+          # 1. Check every service first, so a release is all or nothing.
+          for svc in $SERVICES; do
+            src="${IMAGE_PREFIX}/${svc}:sha-${GITHUB_SHA}"
+            dst="${IMAGE_PREFIX}/${svc}:${RELEASE}"
+            new="$(digest "$src")"
+            if [ -z "$new" ]; then
+              echo "::error::${src} does not exist. Tag only commits on main whose ci run has finished (re-run this workflow once it has)."
+              exit 1
+            fi
+            current="$(digest "$dst")"
+            if [ -n "$current" ] && [ "$current" != "$new" ]; then
+              echo "::error::${dst} already points at other images (${current}). Release tags are never moved; cut a new version."
+              exit 1
+            fi
+          done
+
+          {
+            echo "### Release ${RELEASE} = ${GITHUB_SHA:0:12}"
+            echo ""
+            echo "| service | image | digest |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 2. Copy the tags inside the registry (no pull, same digest).
+          for svc in $SERVICES; do
+            src="${IMAGE_PREFIX}/${svc}:sha-${GITHUB_SHA}"
+            dst="${IMAGE_PREFIX}/${svc}:${RELEASE}"
+            new="$(digest "$src")"
+            if [ "$(digest "$dst")" = "$new" ]; then
+              echo "${svc}: ${RELEASE} already exists, nothing to do."
+            else
+              docker buildx imagetools create --tag "$dst" "$src"
+              echo "${svc}: ${RELEASE} -> ${GITHUB_SHA:0:12} (${new})"
+            fi
+            echo "| ${svc} | \`${dst}\` | \`${new:7:12}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done

@@ -1,5 +1,5 @@
 # One-click rollback: Actions > rollback > Run workflow.
-# One command:        gh workflow run rollback.yml -f environment=production
+# One command:        gh workflow run rollback.yml -f environment=prod
 #
 # With no version, the environment goes back to the release it ran before the
 # current one (<service>:<env>-previous). Running it twice swaps back, like `cd -`.
@@ -69,3 +69,4 @@ jobs:
     with:
       environment: ${{ inputs.environment }}
       version: ${{ needs.resolve.outputs.version }}
+      allow_older: true
