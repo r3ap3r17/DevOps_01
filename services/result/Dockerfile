@@ -1,7 +1,9 @@
-FROM node:18-slim
+# Node 18 is end of life and its image no longer gets OS patches: use the current LTS.
+FROM node:24-slim
 
-# add curl for healthcheck
+# add curl for healthcheck; upgrade pulls OS fixes newer than the base image
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends curl tini && \
     rm -rf /var/lib/apt/lists/*
 
