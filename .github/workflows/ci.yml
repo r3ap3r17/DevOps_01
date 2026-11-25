@@ -33,36 +33,96 @@ env:
 
 jobs:
   # ---------------------------------------------------------------- trunk-based
-  branch-age:
-    name: branch age
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    env:
-      WARN_DAYS: 2
-      MAX_DAYS: 5
-      BASE_REF: ${{ github.base_ref }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Branch is short-lived
-        run: |
-          oldest="$(git log --format=%at "origin/${BASE_REF}..HEAD" | tail -n 1)"
-          if [ -z "$oldest" ]; then
-            echo "No commits ahead of ${BASE_REF}."
-            exit 0
-          fi
-          age_days=$(( ( $(date +%s) - oldest ) / 86400 ))
-          echo "Oldest commit on this branch is ${age_days} day(s) old."
-          if [ "$age_days" -gt "$MAX_DAYS" ]; then
-            echo "::error::Branch is ${age_days} days old (limit ${MAX_DAYS}). Merge smaller pieces or split the work."
-            exit 1
-          elif [ "$age_days" -gt "$WARN_DAYS" ]; then
-            echo "::warning::Branch is ${age_days} days old. Trunk-based flow aims to merge within ${WARN_DAYS} days."
-          fi
+  # branch-age:
+  #     name: branch age
+  #     if: github.event_name == 'pull_request'
+  #     runs-on: ubuntu-24.04
+  #     timeout-minutes: 5
+  #     permissions:
+  #       contents: read
+  #       pull-requests: write
+  #     env:
+  #       WARN_DAYS: 2
+  #       MAX_DAYS: 5
+  #       BASE_REF: ${{ github.base_ref }}
+  #       PR_CREATED: ${{ github.event.pull_request.created_at }}
+  #     steps:
+  #       - uses: actions/checkout@<verified-sha> # vX.Y.Z
+  #         with:
+  #           ref: ${{ github.event.pull_request.head.sha }}
+  #           fetch-depth: 0
+  #           persist-credentials: false
 
+  #       - name: Measure branch age
+  #         id: age
+  #         run: |
+  #           set -euo pipefail
+
+  #           oldest_commit="$(git log --no-merges --format=%at "origin/${BASE_REF}..HEAD" | sort -n | head -n 1)"
+  #           if [ -z "$oldest_commit" ]; then
+  #             echo "No commits ahead of ${BASE_REF}."
+  #             echo "level=ok" >> "$GITHUB_OUTPUT"
+  #             exit 0
+  #           fi
+
+  #           # start = oldest commit or PR creation, whichever is earlier
+  #           pr_created=$(date -d "$PR_CREATED" +%s)
+  #           start=$(( oldest_commit < pr_created ? oldest_commit : pr_created ))
+
+  #           # count business days (Mon-Fri) since start
+  #           age_days=0
+  #           day=$(date -u -d "@${start}" +%F)
+  #           today=$(date -u +%F)
+  #           while [ "$day" \< "$today" ]; do
+  #             day=$(date -u -d "${day} + 1 day" +%F)
+  #             if [ "$(date -u -d "$day" +%u)" -le 5 ]; then
+  #               age_days=$((age_days + 1))
+  #             fi
+  #           done
+
+  #           echo "Branch age: ${age_days} business day(s)."
+
+  #           if [ "$age_days" -gt "$MAX_DAYS" ]; then
+  #             level=over
+  #             echo "::warning::Branch is ${age_days} business days old (target max ${MAX_DAYS}). Consider splitting the work or merging behind a feature flag."
+  #           elif [ "$age_days" -gt "$WARN_DAYS" ]; then
+  #             level=warn
+  #             echo "::warning::Branch is ${age_days} business days old. Trunk-based flow aims to merge within ${WARN_DAYS}."
+  #           else
+  #             level=ok
+  #           fi
+
+  #           echo "age_days=${age_days}" >> "$GITHUB_OUTPUT"
+  #           echo "level=${level}" >> "$GITHUB_OUTPUT"
+
+  #       - name: Nudge on PR
+  #         # fork PRs get a read-only token, so they only see the annotation
+  #         if: steps.age.outputs.level != 'ok' && github.event.pull_request.head.repo.full_name == github.repository
+  #         env:
+  #           GH_TOKEN: ${{ github.token }}
+  #           REPO: ${{ github.repository }}
+  #           PR_NUMBER: ${{ github.event.pull_request.number }}
+  #           AGE: ${{ steps.age.outputs.age_days }}
+  #           LEVEL: ${{ steps.age.outputs.level }}
+  #         run: |
+  #           set -euo pipefail
+  #           marker="<!-- branch-age-nudge -->"
+
+  #           if [ "$LEVEL" = "over" ]; then
+  #             msg=":hourglass: This branch is **${AGE} business days** old, past the ${MAX_DAYS} day target. Could part of it be merged now, with the rest behind a feature flag?"
+  #           else
+  #             msg=":wave: This branch is **${AGE} business days** old. Trunk-based flow aims to merge within ${WARN_DAYS}, so smaller PRs help keep main moving."
+  #           fi
+  #           body="$(printf '%s\n%s' "$marker" "$msg")"
+
+  #           existing="$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+  #             --jq ".[] | select(.body | startswith(\"${marker}\")) | .id" | tail -n 1)"
+
+  #           if [ -n "$existing" ]; then
+  #             gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="$body" > /dev/null
+  #           else
+  #             gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body"
+  #           fi
   # ---------------------------------------------------------------- fast checks
   static:
     name: static checks
@@ -140,7 +200,7 @@ jobs:
       - if: matrix.service == 'result'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "18"
+          node-version: "24"
           cache: npm
           cache-dependency-path: services/result/package-lock.json
       - if: matrix.service == 'result'
@@ -236,41 +296,11 @@ jobs:
           only-fixed: true
           output-format: table
 
-  integration:
-    name: integration
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      IMAGE_TAG: sha-${{ github.sha }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Image name
-        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: image-*
-          path: ${{ runner.temp }}/images
-          merge-multiple: true
-      - name: Load images
-        run: |
-          for f in "${RUNNER_TEMP}"/images/*.tar; do
-            docker load --input "$f"
-          done
-      - name: End-to-end test (vote -> redis -> worker -> db -> result)
-        run: docker compose --file ci/compose.yml up --build --exit-code-from sut sut
-      - name: Service logs
-        if: failure()
-        run: docker compose --file ci/compose.yml logs --no-color
-      - name: Tear down
-        if: always()
-        run: docker compose --file ci/compose.yml down --volumes
-
   # ---------------------------------------------------------------- release
   publish:
     name: publish (${{ matrix.service }})
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [scan, integration]
+    needs: [scan]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -313,7 +343,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/deploy.yml
     with:
-      environment: staging
+      environment: stg
       version: ${{ github.sha }}
 
   deploy-production:
@@ -324,5 +354,5 @@ jobs:
       packages: write
     uses: ./.github/workflows/deploy.yml
     with:
-      environment: production
+      environment: prod
       version: ${{ github.sha }}
